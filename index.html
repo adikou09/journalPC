@@ -1205,6 +1205,14 @@ async function loadCurrentUser() {
     if (!supabaseClient) return false;
     const { data: { user } } = await supabaseClient.auth.getUser();
     currentAuthUser = user || null;
+    try {
+        const { data: sessionData } = await supabaseClient.auth.getSession();
+        if (sessionData?.session?.access_token && supabaseClient.realtime?.setAuth) {
+            await supabaseClient.realtime.setAuth(sessionData.session.access_token);
+        }
+    } catch (e) {
+        console.warn("Realtime auth:", e);
+    }
 
     if (!user) {
         currentUserRole = null;
@@ -5543,6 +5551,35 @@ async function saveToCloud(
 /* =========================================================
    ЗАГРУЗКА ИЗ SUPABASE
    ========================================================= */
+
+async function forceCloudRefresh() {
+    if (!supabaseClient || !currentAuthUser) return false;
+    try {
+        const { data, error } = await supabaseClient
+            .from("group3_journal")
+            .select("id,data,updated_at")
+            .eq("id", selectedGroupId)
+            .maybeSingle();
+        if (error) {
+            console.error("Cloud refresh:", error);
+            updateSyncStatus("⚠️ Supabase: " + (error.message || "ошибка"), false);
+            return false;
+        }
+        if (data?.data) {
+            state = normalizeState(data.data);
+            setCurrentGroupName(state.settings.groupName);
+            saveLocalBackup();
+            refreshAll();
+            updateSyncStatus("☁️ Синхронизировано", true);
+            return true;
+        }
+        return false;
+    } catch (e) {
+        console.error("Cloud refresh exception:", e);
+        updateSyncStatus("⚠️ Supabase: " + (e.message || "ошибка"), false);
+        return false;
+    }
+}
 
 async function loadFromCloud() {
 
