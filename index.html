@@ -1456,18 +1456,15 @@ function startRelationalRealtime() {
         .channel('attendance-realtime')
         .on('postgres_changes', {
             event: '*', schema: 'public', table: 'attendance'
-        }, payload => {
-            const row = payload.new || payload.old;
-            if (!row) return;
-            const localStudentId = localStudentIdByDbId[row.student_id];
-            if (!localStudentId) return;
-            const record = getDayRecord(row.date, localStudentId);
-            if (payload.eventType === 'DELETE') delete record.dailyStatus;
-            else record.dailyStatus = row.status;
-            saveLocalBackup();
-            refreshAll();
+        }, async payload => {
+            // Не полагаемся только на payload: заново читаем БД, чтобы
+            // устройство всегда получало актуальное состояние.
+            await loadAttendanceFromDatabase();
+            updateSyncStatus("☁️ Синхронизировано", true);
         })
-        .subscribe();
+        .subscribe((status) => {
+            console.log('attendance realtime:', status);
+        });
 }
 
 /* =========================================================
@@ -5791,6 +5788,12 @@ function startRealtime() {
                         saveLocalBackup();
                         refreshAll();
 
+                        // Посещаемость хранится отдельно в attendance.
+                        // После обновления общего снимка повторно загружаем
+                        // реляционную посещаемость, чтобы старый snapshot
+                        // не затёр изменения с другого устройства.
+                        loadAttendanceFromDatabase();
+
                         updateSyncStatus(
                             "☁️ Онлайн",
                             true
@@ -6094,23 +6097,22 @@ async function init() {
 
 
     /*
-       Резервная проверка
-       каждые 10 секунд.
+       Резервная проверка каждые 5 секунд.
+       Нужна на случай, если браузер не доставил Realtime-событие.
     */
 
     setInterval(
         async () => {
 
-            if (
-                supabaseClient
-            ) {
-
+            if (supabaseClient && currentAuthUser) {
+                await loadGroupsFromDatabase();
+                await loadStudentsFromDatabase();
                 await loadFromCloud();
-
+                await loadAttendanceFromDatabase();
             }
 
         },
-        10000
+        5000
     );
 
 }
