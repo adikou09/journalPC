@@ -1252,8 +1252,7 @@ async function loginTeacher() {
     if (await loadCurrentUser()) {
         await loadGroupsFromDatabase();
         await loadStudentsFromDatabase();
-        await loadAttendanceFromDatabase();
-        startRelationalRealtime();
+        // Основной источник журнала: group3_journal.
         refreshAll();
     }
 }
@@ -5498,16 +5497,22 @@ async function saveToCloud(
                 new Date().toISOString()
         };
 
-        const { error } =
+        const { data: savedRow, error } =
             await supabaseClient
                 .from("group3_journal")
                 .upsert(
                     payload,
                     { onConflict: "id" }
-                );
+                )
+                .select("id,updated_at")
+                .single();
 
         if (error) {
             throw error;
+        }
+
+        if (!savedRow || savedRow.id !== selectedGroupId) {
+            throw new Error("Supabase не вернул сохранённую запись журнала");
         }
 
         updateSyncStatus(
@@ -5725,9 +5730,7 @@ async function switchGroup(groupId) {
         await loadGroupsFromDatabase();
         await loadFromCloud();
         await loadStudentsFromDatabase();
-        await loadAttendanceFromDatabase();
         startRealtime();
-        startRelationalRealtime();
     }
 }
 
@@ -5794,11 +5797,6 @@ function startRealtime() {
                         saveLocalBackup();
                         refreshAll();
 
-                        // Посещаемость хранится отдельно в attendance.
-                        // После обновления общего снимка повторно загружаем
-                        // реляционную посещаемость, чтобы старый snapshot
-                        // не затёр изменения с другого устройства.
-                        loadAttendanceFromDatabase();
 
                         updateSyncStatus(
                             "☁️ Онлайн",
@@ -6009,8 +6007,6 @@ if (supabaseClient) {
             if (await loadCurrentUser()) {
                 await loadGroupsFromDatabase();
                 await loadStudentsFromDatabase();
-                await loadAttendanceFromDatabase();
-                startRelationalRealtime();
                 refreshAll();
             }
         }
@@ -6087,9 +6083,7 @@ async function init() {
             await loadGroupsFromDatabase();
             await loadFromCloud();
             await loadStudentsFromDatabase();
-            await loadAttendanceFromDatabase();
             startRealtime();
-            startRelationalRealtime();
         }
 
     } else {
@@ -6114,7 +6108,6 @@ async function init() {
                 await loadGroupsFromDatabase();
                 await loadStudentsFromDatabase();
                 await loadFromCloud();
-                await loadAttendanceFromDatabase();
             }
 
         },
