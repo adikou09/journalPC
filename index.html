@@ -1356,36 +1356,9 @@ async function loadStudentsFromDatabase() {
 }
 
 async function loadAttendanceFromDatabase() {
-    if (!requireTeacher()) return;
-
-    const dbIds = Object.values(dbStudentIdByLocalId);
-    if (!dbIds.length) return;
-
-    const { data, error } = await supabaseClient
-        .from('attendance')
-        .select('id,student_id,date,status,updated_at')
-        .in('student_id', dbIds);
-
-    if (error) {
-        console.error('attendance:', error);
-        return;
-    }
-
-    (data || []).forEach(row => {
-        const localStudentId = localStudentIdByDbId[row.student_id];
-        if (!localStudentId) return;
-
-        const record = getDayRecord(row.date, localStudentId);
-        record.dailyStatus = row.status;
-
-        // В таблице attendance хранится только итог за день.
-        // Не переносим его в отдельные пары: иначе один статус "absent"
-        // превращает все 4 пары в "отсутствовал".
-        // Статусы конкретных пар берём из group3_journal.data.
-    });
-
-    saveLocalBackup();
-    refreshAll();
+    // attendance is a daily summary only. It must NEVER overwrite
+    // the four lesson statuses stored in group3_journal.data.
+    return;
 }
 
 function getDailyAttendanceStatus(date, studentId) {
@@ -2732,9 +2705,6 @@ async function setLessonStatus(
 
 
     updateGroupSelector();
-
-    // ☁️ Сохраняем итоговую посещаемость студента в общей БД.
-    await syncAttendanceRow(date, studentId);
 
     await saveToCloud();
 
@@ -5804,9 +5774,11 @@ async function switchGroup(groupId) {
     if (supabaseClient && currentAuthUser) {
         await loadGroupsFromDatabase();
         await loadFromCloud();
+        // Одноразово очищаем именно старую ошибку: все 4 пары = absent
+        // без времени прихода. attendance не используется для этого.
+        await repairLegacyAbsentBug();
         await loadStudentsFromDatabase();
         startRealtime();
-        startRelationalRealtime();
     }
 }
 
@@ -6138,8 +6110,7 @@ async function init() {
             await repairLegacyAbsentBug();
             await loadStudentsFromDatabase();
             startRealtime();
-            startRelationalRealtime();
-        }
+            }
 
     } else {
 
@@ -6179,8 +6150,7 @@ async function init() {
     window.addEventListener("pageshow", async () => {
         if (supabaseClient && currentAuthUser) {
             await loadFromCloud();
-            await repairLegacyAbsentBug();
-        }
+            }
     });
 
 }
