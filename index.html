@@ -5552,6 +5552,39 @@ async function saveToCloud(
    ЗАГРУЗКА ИЗ SUPABASE
    ========================================================= */
 
+async function repairLegacyAbsentBug() {
+    // Одноразово исправляем записи, созданные старой ошибкой:
+    // дневной absent был ошибочно записан во все 4 пары.
+    // Исправляем только записи, где все 4 пары имеют absent и нет
+    // никаких данных о времени прихода. После исправления запись больше
+    // не подходит под условие и повторно не меняется.
+    let changed = false;
+    for (const date of Object.keys(state.attendance || {})) {
+        const day = state.attendance[date] || {};
+        for (const studentId of Object.keys(day)) {
+            const record = normalizeDayRecord(day[studentId]);
+            const lessons = [1,2,3,4].map(id => record.lessons[id]);
+            const allAbsent = lessons.every(l => l && l.status === 'absent');
+            const noArrival = lessons.every(l => !l.arrival);
+            if (allAbsent && noArrival) {
+                lessons.forEach(l => { l.status = 'present'; l.arrival = ''; });
+                record.lessons[1] = lessons[0];
+                record.lessons[2] = lessons[1];
+                record.lessons[3] = lessons[2];
+                record.lessons[4] = lessons[3];
+                day[studentId] = record;
+                changed = true;
+            }
+        }
+    }
+    if (changed) {
+        state.attendance = state.attendance || {};
+        await saveToCloud(true);
+        saveLocalBackup();
+        refreshAll();
+    }
+}
+
 async function forceCloudRefresh() {
     if (!supabaseClient || !currentAuthUser) return false;
     try {
@@ -6102,6 +6135,7 @@ async function init() {
         if (authenticated) {
             await loadGroupsFromDatabase();
             await loadFromCloud();
+            await repairLegacyAbsentBug();
             await loadStudentsFromDatabase();
             startRealtime();
             startRelationalRealtime();
@@ -6145,6 +6179,7 @@ async function init() {
     window.addEventListener("pageshow", async () => {
         if (supabaseClient && currentAuthUser) {
             await loadFromCloud();
+            await repairLegacyAbsentBug();
         }
     });
 
