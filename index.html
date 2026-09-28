@@ -1362,8 +1362,26 @@ async function loadAttendanceFromDatabase() {
     (data || []).forEach(row => {
         const localStudentId = localStudentIdByDbId[row.student_id];
         if (!localStudentId) return;
+
         const record = getDayRecord(row.date, localStudentId);
         record.dailyStatus = row.status;
+
+        // Таблица attendance хранит итог за день, а интерфейс показывает
+        // статус каждой пары. Переносим облачный итог обратно в пары.
+        if (row.status === 'absent' || row.status === 'sick') {
+            LESSONS.forEach(lesson => {
+                record.lessons[lesson.id].status = 'absent';
+                record.lessons[lesson.id].arrival = '';
+            });
+        } else if (row.status === 'present') {
+            LESSONS.forEach(lesson => {
+                // Если в облачной полной записи пары уже отмечены как late,
+                // не затираем это. Остальные считаем присутствующими.
+                if (record.lessons[lesson.id].status !== 'late') {
+                    record.lessons[lesson.id].status = 'present';
+                }
+            });
+        }
     });
 
     saveLocalBackup();
