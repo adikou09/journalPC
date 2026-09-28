@@ -5419,29 +5419,33 @@ function loadLocalBackup() {
             );
 
         // Совместимость со старой локальной копией Группы 3.
-        if (
-            !raw &&
-            selectedGroupId === "group3"
-        ) {
-            raw =
-                localStorage.getItem(
-                    "group3_journal_cloud_backup"
-                );
+        let legacyRaw = null;
+        if (selectedGroupId === "group3") {
+            legacyRaw = localStorage.getItem("group3_journal_cloud_backup");
+        }
+
+        // Если текущая копия пустая, но осталась старая резервная копия,
+        // используем её, чтобы не потерять исходный журнал.
+        if (raw && legacyRaw) {
+            try {
+                const parsedCurrent = normalizeState(JSON.parse(raw));
+                const currentIsEmpty = !parsedCurrent.students?.length &&
+                    !Object.keys(parsedCurrent.attendance || {}).length &&
+                    !parsedCurrent.history?.length &&
+                    !parsedCurrent.notes?.length;
+                if (currentIsEmpty) raw = legacyRaw;
+            } catch (e) {
+                raw = legacyRaw;
+            }
+        } else if (!raw && legacyRaw) {
+            raw = legacyRaw;
         }
 
         if (!raw) {
-
             return false;
-
         }
 
-
-        state =
-            normalizeState(
-                JSON.parse(raw)
-            );
-
-
+        state = normalizeState(JSON.parse(raw));
         return true;
 
 
@@ -5599,19 +5603,30 @@ async function loadFromCloud() {
 
         if (data && data.data) {
 
-            state =
-                normalizeState(
-                    data.data
-                );
+            const cloudState = normalizeState(data.data);
+            const cloudIsEmpty =
+                !cloudState.students?.length &&
+                !Object.keys(cloudState.attendance || {}).length &&
+                !cloudState.history?.length &&
+                !cloudState.notes?.length;
 
-            setCurrentGroupName(state.settings.groupName);
-            saveLocalBackup();
-            refreshAll();
-
-            updateSyncStatus(
-                "☁️ Онлайн",
-                true
-            );
+            // Не затираем готовый журнал пустой записью из облака.
+            // Если на этом устройстве уже есть данные, отправляем их в Supabase.
+            if (cloudIsEmpty && state.students?.length) {
+                state = normalizeState(state);
+                setCurrentGroupName(state.settings.groupName);
+                await saveToCloud(true);
+                saveLocalBackup();
+                refreshAll();
+                updateSyncStatus("☁️ Онлайн", true);
+                showToast("Данные текущего журнала загружены в облако.");
+            } else {
+                state = cloudState;
+                setCurrentGroupName(state.settings.groupName);
+                saveLocalBackup();
+                refreshAll();
+                updateSyncStatus("☁️ Онлайн", true);
+            }
 
         } else {
 
