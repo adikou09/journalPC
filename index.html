@@ -1157,10 +1157,12 @@ tbody tr:nth-child(even) {
    ========================================================= */
 
 const SUPABASE_URL =
-    "https://rufhsyyljvjyqdmhvpam.supabase.co";
+    "https://yhskysdfszgnidiyxsim.supabase.co";
 
+// ВСТАВЬ СЮДА ПОЛНЫЙ Publishable key из Supabase → Settings → API.
+// Не вставляй service_role key.
 const SUPABASE_PUBLISHABLE_KEY =
-    "sb_publishable_v2nQMnj57S6lT_TKY7zJuw_YR2okvFj";
+    "sb_publishable_Ka9FaK0PsNmkTlPFYbzAIA_fPz4icAQ"; // Вставь полный sb_publishable_... ключ сюда
 
 let supabaseClient = null;
 
@@ -1182,6 +1184,9 @@ if (
    ========================================================= */
 let currentAuthUser = null;
 let currentUserRole = null;
+// Связь локальных ID студентов с UUID студентов в Supabase.
+const dbStudentIdByLocalId = {};
+const localStudentIdByDbId = {};
 
 function requireTeacher() {
     if (!currentAuthUser || !['teacher', 'admin'].includes(currentUserRole)) {
@@ -1280,31 +1285,89 @@ async function loadGroupsFromDatabase() {
 
 async function loadStudentsFromDatabase() {
     if (!requireTeacher()) return;
+
     const { data, error } = await supabaseClient
         .from('students')
         .select('id,full_name,group_id')
         .eq('group_id', selectedGroupId)
         .order('full_name');
-    if (error) { console.error('students:', error); return; }
-    if (data?.length) {
-        state.students = data.map(s => ({ id: s.id, name: s.full_name }));
-        saveLocalBackup();
-        refreshAll();
+
+    if (error) {
+        console.error('students:', error);
+        return;
     }
+
+    const dbRows = data || [];
+    const localByName = new Map(
+        state.students.map(s => [String(s.name).trim().toLowerCase(), s])
+    );
+
+    // Если группа ещё не заведена в БД, переносим существующих студентов
+    // из готового журнала в Supabase автоматически.
+    if (!dbRows.length && state.students.length) {
+        const rowsToInsert = state.students.map(s => ({
+            full_name: s.name,
+            group_id: selectedGroupId
+        }));
+
+        const inserted = await supabaseClient
+            .from('students')
+            .insert(rowsToInsert)
+            .select('id,full_name,group_id');
+
+        if (inserted.error) {
+            console.error('students insert:', inserted.error);
+            return;
+        }
+
+        dbRows.push(...(inserted.data || []));
+    }
+
+    dbRows.forEach(s => {
+        const local = localByName.get(String(s.full_name).trim().toLowerCase());
+        const localId = local?.id || s.id;
+        dbStudentIdByLocalId[localId] = s.id;
+        localStudentIdByDbId[s.id] = localId;
+    });
+
+    // Если в БД появились новые студенты, добавляем их в текущий интерфейс,
+    // но не заменяем существующие локальные ID.
+    const merged = [...state.students];
+    dbRows.forEach(s => {
+        const exists = merged.some(x => String(x.name).trim().toLowerCase() === String(s.full_name).trim().toLowerCase());
+        if (!exists) merged.push({ id: s.id, name: s.full_name });
+    });
+    state.students = merged;
+
+    saveLocalBackup();
+    refreshAll();
 }
 
 async function loadAttendanceFromDatabase() {
     if (!requireTeacher()) return;
+
+    const dbIds = Object.values(dbStudentIdByLocalId);
+    if (!dbIds.length) return;
+
     const { data, error } = await supabaseClient
         .from('attendance')
         .select('id,student_id,date,status,updated_at')
-        .in('student_id', state.students.map(s => s.id));
-    if (error) { console.error('attendance:', error); return; }
+        .in('student_id', dbIds);
+
+    if (error) {
+        console.error('attendance:', error);
+        return;
+    }
+
     (data || []).forEach(row => {
-        const record = getDayRecord(row.date, row.student_id);
+        const localStudentId = localStudentIdByDbId[row.student_id];
+        if (!localStudentId) return;
+        const record = getDayRecord(row.date, localStudentId);
         record.dailyStatus = row.status;
     });
+
     saveLocalBackup();
+    refreshAll();
 }
 
 function getDailyAttendanceStatus(date, studentId) {
@@ -1317,26 +1380,60 @@ function getDailyAttendanceStatus(date, studentId) {
 
 async function syncAttendanceRow(date, studentId) {
     if (!requireTeacher()) return;
-    // Старые студенты из прежнего журнала могут иметь не-UUID ID.
-    // Их подробная запись продолжает синхронизироваться через group3_journal.
-    // В таблицу attendance отправляем только студентов, уже зарегистрированных в students.
-    const { data: dbStudent, error: studentError } = await supabaseClient
-        .from('students')
-        .select('id')
-        .eq('id', studentId)
-        .maybeSingle();
-    if (studentError || !dbStudent) return;
 
-    const status = getDailyAttendanceStatus(date, studentId);
+    let dbStudentId = dbStudentIdByLocalId[studentId];
+
+    // Если отображаемый студент ещё не сопоставлен с БД, создаём/находим его.
+    if (!dbStudentId) {
+        const localStudent = getStudentById(studentId);
+        if (!localStudent) return;
+
+        const { data: existing, error: findError } = await supabaseClient
+            .from('students')
+            .select('id,full_name,group_id')
+            .eq('group_id', selectedGroupId)
+            .eq('full_name', localStudent.name)
+            .maybeSingle();
+
+        if (findError) {
+            console.error('student lookup:', findError);
+            return;
+        }
+
+        let dbStudent = existing;
+
+        if (!dbStudent) {
+            const inserted = await supabaseClient
+                .from('students')
+                .insert({ full_name: localStudent.name, group_id: selectedGroupId })
+                .select('id,full_name,group_id')
+                .single();
+            if (inserted.error) {
+                console.error('student insert:', inserted.error);
+                return;
+            }
+            dbStudent = inserted.data;
+        }
+
+        dbStudentId = dbStudent.id;
+        dbStudentIdByLocalId[studentId] = dbStudent.id;
+        localStudentIdByDbId[dbStudent.id] = studentId;
+    }
+
+    let status = getDailyAttendanceStatus(date, studentId);
+    // В таблице attendance нет статуса "late", поэтому опоздание считается присутствием.
+    if (status === 'late') status = 'present';
+
     const { error } = await supabaseClient
         .from('attendance')
         .upsert({
-            student_id: studentId,
+            student_id: dbStudentId,
             date,
             status,
             updated_by: currentAuthUser.id,
             updated_at: new Date().toISOString()
         }, { onConflict: 'student_id,date' });
+
     if (error) console.error('attendance:', error);
 }
 
@@ -1361,8 +1458,10 @@ function startRelationalRealtime() {
             event: '*', schema: 'public', table: 'attendance'
         }, payload => {
             const row = payload.new || payload.old;
-            if (!row || !state.students.some(s => s.id === row.student_id)) return;
-            const record = getDayRecord(row.date, row.student_id);
+            if (!row) return;
+            const localStudentId = localStudentIdByDbId[row.student_id];
+            if (!localStudentId) return;
+            const record = getDayRecord(row.date, localStudentId);
             if (payload.eventType === 'DELETE') delete record.dailyStatus;
             else record.dailyStatus = row.status;
             saveLocalBackup();
@@ -2618,6 +2717,9 @@ async function setLessonStatus(
 
 
     updateGroupSelector();
+
+    // ☁️ Сохраняем итоговую посещаемость студента в общей БД.
+    await syncAttendanceRow(date, studentId);
 
     await saveToCloud();
 
